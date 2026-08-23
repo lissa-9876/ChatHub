@@ -3,32 +3,41 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { connectDB } from './config/db.js';
+import mongoose from 'mongoose';
 import authRoutes from './routes/auth.js';
 
 dotenv.config();
 
-// Connect to Database
-connectDB();
-
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors());
-app.use(express.json()); // Allow JSON data
+app.use(cors({ origin: '*' }));
+app.use(express.json());
 
-// 🔗 API Routes
+// Routes
 app.use('/api/auth', authRoutes);
 
-// 🔌 Socket.io Setup
+// Socket.io
 const io = new Server(server, { cors: { origin: '*' } });
-
 io.on('connection', (socket) => {
-  console.log(`⚡ User Connected: ${socket.id}`);
-  socket.on('disconnect', () => console.log(`❌ User Disconnected: ${socket.id}`));
+  socket.on('join_room', (roomId) => socket.join(roomId));
+  socket.on('send_message', (data) => socket.to(data.roomId).emit('receive_message', data));
+});
+
+// MongoDB Connection with bufferTimeout config
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/chathub';
+
+mongoose.connect(MONGO_URI, {
+  serverSelectionTimeoutMS: 5000,
+  connectTimeoutMS: 10000,
+})
+.then(() => console.log('🌿 MongoDB Atlas Connected Successfully!'))
+.catch(err => {
+  console.error('❌ MongoDB Connection Error:', err.message);
+  console.log('💡 TIP: Check your network or use local MongoDB: mongodb://127.0.0.1:27017/chathub');
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 Chathub Server running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 ChatHub Backend Live on Port: ${PORT}`);
 });
