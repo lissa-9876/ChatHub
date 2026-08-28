@@ -58,14 +58,25 @@ const Auth = () => {
       if (!res.ok) throw new Error(data.message || 'Invalid OTP');
 
       localStorage.setItem('chathub_token', data.token);
-      setStep('profile');
+
+      // Check karein agar user pehle se registered hai
+      const savedUser = JSON.parse(localStorage.getItem('chathub_user') || 'null');
+      if (savedUser && savedUser.email.toLowerCase() === email.toLowerCase().trim() && savedUser.name) {
+        if (redirectUrl) {
+          navigate(redirectUrl);
+        } else {
+          navigate('/inbox');
+        }
+      } else {
+        // Naya user hai to name setup par bhejein
+        setStep('profile');
+      }
     } catch (err) {
       setError(err.message || 'Verification failed');
     } finally {
       setLoading(false);
     }
   };
-
   const handleFinishProfile = (e) => {
     e.preventDefault();
     const finalName = name.trim() || email.split('@')[0];

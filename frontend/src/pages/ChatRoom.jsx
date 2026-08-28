@@ -24,10 +24,8 @@ import {
   Square,
   Trash2,
   PhoneOff,
-  MicOff,
   User,
   Mail,
-  ShieldCheck,
   Lock
 } from 'lucide-react';
 
@@ -37,7 +35,7 @@ const ChatRoom = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { isDarkMode } = useTheme();
+  const { isDarkMode } = useTheme() || { isDarkMode: true };
   const socket = useSocket();
 
   const currentUser = JSON.parse(localStorage.getItem('chathub_user') || '{"name":"User","email":"user@gmail.com"}');
@@ -45,14 +43,15 @@ const ChatRoom = () => {
   const contact = location.state?.contact || {
     id: id,
     name: 'Chat Contact',
-    email: 'friend@gmail.com'
+    email: location.state?.inviterEmail || 'friend@gmail.com'
   };
 
-  // Ensure deterministic 1-to-1 encrypted room ID
+  // Deterministic 1-to-1 encrypted room ID
   const roomId = getOneToOneRoomId(currentUser.email, contact.email);
 
+  // 1. Consistent Local Storage Key for Permanent Message Save
   const [messages, setMessages] = useState(() => {
-    const saved = localStorage.getItem(`chat_msg_${roomId}`);
+    const saved = localStorage.getItem(`chathub_msgs_${roomId}`);
     return saved ? JSON.parse(saved) : [];
   });
 
@@ -75,7 +74,7 @@ const ChatRoom = () => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Voice Playback with Speed Rates (1x, 1.5x, 2x)
+  // Voice Playback
   const [playingAudioId, setPlayingAudioId] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const currentAudioRef = useRef(null);
@@ -85,10 +84,11 @@ const ChatRoom = () => {
   const docInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
+  // 2. Har naye message par local storage update aur auto-scroll
   useEffect(() => {
-    localStorage.setItem(`chat_msg_${roomId}`, JSON.stringify(messages));
+    localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(messages));
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, roomId]);
 
   useEffect(() => {
     let timer;
@@ -110,7 +110,7 @@ const ChatRoom = () => {
     return () => clearInterval(timer);
   }, [activeCall, callStatus]);
 
-  // Socket Connection & Real-Time Decryption
+  // 3. Socket Connection & Real-Time Decryption
   useEffect(() => {
     if (!socket) return;
 
@@ -122,14 +122,26 @@ const ChatRoom = () => {
     });
 
     socket.on('receive_message', async (data) => {
-      // E2EE Decrypt incoming cipher payload
-      let decryptedText = data.text;
-      if (data.cipherText) {
-        decryptedText = await decryptMessage(data.cipherText, roomId);
-      }
+      if (data.roomId === roomId) {
+        let decryptedText = data.text;
+        if (data.cipherText) {
+          try {
+            decryptedText = await decryptMessage(data.cipherText, roomId);
+          } catch (e) {
+            decryptedText = data.text || 'Encrypted Message';
+          }
+        }
 
-      setMessages((prev) => [...prev, { ...data, text: decryptedText, sender: 'them', status: 'seen' }]);
-      socket.emit('mark_seen', { roomId, messageId: data.id });
+        setMessages((prev) => {
+          // Duplicate check
+          if (prev.some((m) => m.id === data.id)) return prev;
+          const updated = [...prev, { ...data, text: decryptedText, sender: 'them', status: 'seen' }];
+          localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
+          return updated;
+        });
+
+        socket.emit('mark_seen', { roomId, messageId: data.id });
+      }
     });
 
     socket.on('message_seen', ({ messageId }) => {
@@ -138,9 +150,11 @@ const ChatRoom = () => {
       );
     });
 
-    socket.on('user_typing', () => {
-      setIsTyping(true);
-      setTimeout(() => setIsTyping(false), 2000);
+    socket.on('user_typing', (data) => {
+      if (data.roomId === roomId) {
+        setIsTyping(true);
+        setTimeout(() => setIsTyping(false), 2000);
+      }
     });
 
     socket.on('incoming_call_ring', ({ type }) => {
@@ -170,7 +184,7 @@ const ChatRoom = () => {
       socket.off('call_rejected');
       socket.off('call_terminated');
     };
-  }, [socket, roomId, currentUser]);
+  }, [socket, roomId, currentUser.email]);
 
   // Send Encrypted Message
   const handleSendMessage = async (e) => {
@@ -178,8 +192,12 @@ const ChatRoom = () => {
     if (!inputMessage.trim()) return;
 
     const rawText = inputMessage.trim();
-    // 🔒 AES-GCM 256-bit Encrypt before network send
-    const cipherText = await encryptMessage(rawText, roomId);
+    let cipherText = '';
+    try {
+      cipherText = await encryptMessage(rawText, roomId);
+    } catch (e) {
+      cipherText = rawText;
+    }
 
     const newMessage = {
       id: Date.now(),
@@ -188,8 +206,8 @@ const ChatRoom = () => {
       senderName: currentUser.name,
       senderEmail: currentUser.email,
       recipientEmail: contact.email,
-      cipherText, // Encrypted payload for wire
-      text: rawText, // Plaintext stored in sender's local storage
+      cipherText,
+      text: rawText,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       status: isRecipientOnline ? 'delivered' : 'sent',
       type: 'text'
@@ -197,7 +215,12 @@ const ChatRoom = () => {
 
     if (socket) socket.emit('send_message', newMessage);
 
-    setMessages((prev) => [...prev, newMessage]);
+    setMessages((prev) => {
+      const updated = [...prev, newMessage];
+      localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
+      return updated;
+    });
+
     setInputMessage('');
     setShowEmojiPicker(false);
     setShowAttachMenu(false);
@@ -234,7 +257,11 @@ const ChatRoom = () => {
           };
 
           if (socket) socket.emit('send_message', newVoiceMsg);
-          setMessages((prev) => [...prev, newVoiceMsg]);
+          setMessages((prev) => {
+            const updated = [...prev, newVoiceMsg];
+            localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
+            return updated;
+          });
         };
       };
 
@@ -254,7 +281,7 @@ const ChatRoom = () => {
 
   const togglePlayAudio = (msgId, audioSrc) => {
     if (playingAudioId === msgId) {
-      currentAudioRef.current.pause();
+      currentAudioRef.current?.pause();
       setPlayingAudioId(null);
     } else {
       if (currentAudioRef.current) currentAudioRef.current.pause();
@@ -294,7 +321,11 @@ const ChatRoom = () => {
       };
 
       if (socket) socket.emit('send_message', newMediaMsg);
-      setMessages((prev) => [...prev, newMediaMsg]);
+      setMessages((prev) => {
+        const updated = [...prev, newMediaMsg];
+        localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
+        return updated;
+      });
       setShowAttachMenu(false);
     };
     reader.readAsDataURL(file);
@@ -349,13 +380,13 @@ const ChatRoom = () => {
             {showOptionsMenu && (
               <div style={{ position: 'absolute', right: '16px', top: '50px', backgroundColor: '#1c2427', border: '1px solid #27353a', borderRadius: '12px', padding: '8px 0', minWidth: '160px', zIndex: 30, boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
                 <button onClick={() => { setShowProfileDrawer(true); setShowOptionsMenu(false); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 16px', background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}><User size={16} /> View Profile</button>
-                <button onClick={() => { setMessages([]); localStorage.removeItem(`chat_msg_${roomId}`); setShowOptionsMenu(false); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 16px', background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}><Trash2 size={16} /> Clear Chat</button>
+                <button onClick={() => { setMessages([]); localStorage.removeItem(`chathub_msgs_${roomId}`); setShowOptionsMenu(false); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 16px', background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}><Trash2 size={16} /> Clear Chat</button>
               </div>
             )}
           </div>
         </div>
 
-        {/* E2EE Lock Banner */}
+        {/* E2EE Banner */}
         <div style={{ backgroundColor: isDarkMode ? '#151c1f' : '#f1f5f9', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', borderBottom: isDarkMode ? '1px solid #1e2629' : '1px solid #e2e8f0' }}>
           <Lock size={12} color="#22c55e" />
           <span style={{ fontSize: '11px', color: isDarkMode ? '#94a3b8' : '#64748b', fontWeight: '500' }}>
@@ -366,7 +397,7 @@ const ChatRoom = () => {
         {/* Message Feed */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', backgroundColor: isDarkMode ? '#0d1113' : '#f8fafc' }}>
           {messages.map((msg) => {
-            const isMe = msg.sender === 'me';
+            const isMe = msg.sender === 'me' || msg.senderEmail === currentUser.email;
             return (
               <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
                 <div style={{ maxWidth: '80%', padding: msg.type === 'voice' ? '10px 14px' : (msg.type === 'image' ? '6px' : '12px 16px'), borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', backgroundColor: isMe ? '#22c55e' : (isDarkMode ? '#1a2226' : '#ffffff'), color: isMe ? '#ffffff' : (isDarkMode ? '#f1f5f9' : '#0f172a'), boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
