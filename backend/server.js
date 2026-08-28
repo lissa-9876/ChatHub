@@ -12,10 +12,17 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors({ origin: '*' }));
+// CORS setup to allow requests from Vercel & local
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
+// Auth API Routes
 app.use('/api/auth', authRoutes);
 
 const getLocalIP = () => {
@@ -32,7 +39,7 @@ const getLocalIP = () => {
 
 const localIP = getLocalIP();
 
-// Email Transporter
+// Email Transporter Configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -109,14 +116,14 @@ io.on('connection', (socket) => {
   // 3. Real-time Encrypted Message Dispatch
   socket.on('send_message', (data) => {
     const isReceiverInRoom = roomUsers.has(data.roomId) && roomUsers.get(data.roomId).size > 1;
-    
+
     // Broadcast inside room
     socket.to(data.roomId).emit('receive_message', {
       ...data,
       status: isReceiverInRoom ? 'delivered' : 'sent'
     });
 
-    // Global Notification Push to Recipient (For Tab Switch, Background & Inbox Badge)
+    // Global Notification Push to Recipient
     if (data.recipientEmail) {
       const recSocketId = userSockets.get(data.recipientEmail.toLowerCase().trim());
       if (recSocketId) {

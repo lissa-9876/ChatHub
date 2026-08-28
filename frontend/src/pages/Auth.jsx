@@ -19,8 +19,8 @@ const Auth = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const hostname = window.location.hostname || 'localhost';
- const API_BASE = "https://a0c7ab1e8bd767d5-154-192-215-40.serveousercontent.com";
+  // Backend Live URL (Serveo Tunnel URL)
+  const API_BASE = "https://a0c7ab1e8bd767d5-154-192-215-40.serveousercontent.com";
 
   const handleSendOtp = async (e) => {
     e.preventDefault();
@@ -28,7 +28,7 @@ const Auth = () => {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/send-otp`, {
+      const res = await fetch(`${API_BASE}/api/auth/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
@@ -37,7 +37,7 @@ const Auth = () => {
       if (!res.ok) throw new Error(data.message || 'Could not send OTP');
       setStep('otp');
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Failed to connect to server');
     } finally {
       setLoading(false);
     }
@@ -49,7 +49,7 @@ const Auth = () => {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/verify-otp`, {
+      const res = await fetch(`${API_BASE}/api/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, otp })
@@ -58,11 +58,9 @@ const Auth = () => {
       if (!res.ok) throw new Error(data.message || 'Invalid OTP');
 
       localStorage.setItem('chathub_token', data.token);
-      
-      // Step to setup name & profile
       setStep('profile');
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Verification failed');
     } finally {
       setLoading(false);
     }
@@ -72,15 +70,14 @@ const Auth = () => {
     e.preventDefault();
     const finalName = name.trim() || email.split('@')[0];
     const userObj = { name: finalName, email: email.toLowerCase().trim() };
-    
+
     localStorage.setItem('chathub_user', JSON.stringify(userObj));
 
-    // If invited by a friend, save them in contacts
     if (inviterEmail) {
       const contactsKey = `chathub_contacts_${userObj.email}`;
       const existing = JSON.parse(localStorage.getItem(contactsKey) || '[]');
       const roomId = redirectUrl ? redirectUrl.split('/chat/')[1] : `room_${Date.now()}`;
-      
+
       if (!existing.some(c => c.email === inviterEmail)) {
         existing.unshift({
           id: roomId,
@@ -132,7 +129,7 @@ const Auth = () => {
           boxSizing: 'border-box'
         }}
       >
-        {/* Glowing Top ChatHub Logo Header */}
+        {/* ChatHub Logo Header */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '24px' }}>
           <div 
             style={{
@@ -167,16 +164,16 @@ const Auth = () => {
           </p>
         </div>
 
-        {/* Feature Badges Row */}
+        {/* Badges */}
         <div 
           style={{ 
             display: 'flex', 
             justifyContent: 'center', 
             gap: '12px', 
-            marginBottom: '24px',
-            fontSize: '11.5px',
-            color: isDarkMode ? '#cbd5e1' : '#64748b',
-            fontWeight: '600'
+            marginBottom: '24px', 
+            fontSize: '11.5px', 
+            color: isDarkMode ? '#cbd5e1' : '#64748b', 
+            fontWeight: '600' 
           }}
         >
           <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -276,7 +273,7 @@ const Auth = () => {
               <User size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
               <input 
                 type="text" 
-                placeholder="Your Full Name (e.g. Laiba)" 
+                placeholder="Your Full Name" 
                 value={name} 
                 onChange={(e) => setName(e.target.value)} 
                 required 
