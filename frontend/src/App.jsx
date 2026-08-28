@@ -7,6 +7,7 @@ import ChatRoom from './pages/ChatRoom.jsx';
 import Settings from './pages/Settings.jsx';
 import Teams from './pages/Teams.jsx';
 import Calls from './pages/Calls.jsx';
+import JoinChat from './pages/JoinChat';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
       <Route path="/settings" element={<Settings />} />
       <Route path="/teams" element={<Teams />} />
       <Route path="/calls" element={<Calls />} />
+      <Route path="/join/:id" element={<JoinChat />} />
     </Routes>
   );
 }

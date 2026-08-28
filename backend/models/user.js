@@ -1,10 +1,8 @@
 import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phone: { type: String, default: '' },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
+  name: { type: String, default: '' },
   otp: { type: String, default: null },
   otpExpires: { type: Date, default: null },
   isVerified: { type: Boolean, default: false }

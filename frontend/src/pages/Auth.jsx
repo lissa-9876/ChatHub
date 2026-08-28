@@ -1,60 +1,43 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Mail, Lock, User, Phone, ArrowRight, ShieldCheck } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Mail, ArrowRight, ShieldCheck, User, Zap } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
 const Auth = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { isDarkMode } = useTheme() || { isDarkMode: true };
 
-  const [isLogin, setIsLogin] = useState(false);
-  const [step, setStep] = useState('auth'); // 'auth' | 'otp'
+  const redirectUrl = searchParams.get('redirect');
+  const inviterName = searchParams.get('inviter');
+  const inviterEmail = searchParams.get('inviterEmail');
+
+  const [step, setStep] = useState('email'); // 'email' | 'otp' | 'profile'
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
-
-  // Form Fields
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [otp, setOtp] = useState('');
 
   const hostname = window.location.hostname || 'localhost';
   const API_BASE = `http://${hostname}:5000/api/auth`;
 
-  const handleSubmit = async (e) => {
+  const handleSendOtp = async (e) => {
     e.preventDefault();
     setError('');
-    setSuccessMsg('');
     setLoading(true);
 
-    const url = isLogin ? `${API_BASE}/login` : `${API_BASE}/register`;
-    const payload = isLogin ? { email, password } : { name, phone, email, password };
-
     try {
-      const res = await fetch(url, {
+      const res = await fetch(`${API_BASE}/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ email })
       });
-      
       const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.message || 'Action could not be completed.');
-      }
-
-      if (isLogin) {
-        localStorage.setItem('chathub_token', data.token);
-        localStorage.setItem('chathub_user', JSON.stringify(data.user));
-        navigate('/inbox');
-      } else {
-        setSuccessMsg(data.message || 'OTP sent! Please check your email.');
-        setStep('otp');
-      }
+      if (!res.ok) throw new Error(data.message || 'Could not send OTP');
+      setStep('otp');
     } catch (err) {
-      setError(err.message || 'Connection failed. Please check backend server.');
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -63,7 +46,6 @@ const Auth = () => {
   const handleVerifyOtp = async (e) => {
     e.preventDefault();
     setError('');
-    setSuccessMsg('');
     setLoading(true);
 
     try {
@@ -72,25 +54,59 @@ const Auth = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, otp })
       });
-      
       const data = await res.json();
-
-      if (!res.ok) throw new Error(data.message || 'OTP verification failed');
+      if (!res.ok) throw new Error(data.message || 'Invalid OTP');
 
       localStorage.setItem('chathub_token', data.token);
-      localStorage.setItem('chathub_user', JSON.stringify(data.user));
-      navigate('/inbox');
+      
+      // Step to setup name & profile
+      setStep('profile');
     } catch (err) {
-      setError(err.message || 'Invalid verification code.');
+      setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFinishProfile = (e) => {
+    e.preventDefault();
+    const finalName = name.trim() || email.split('@')[0];
+    const userObj = { name: finalName, email: email.toLowerCase().trim() };
+    
+    localStorage.setItem('chathub_user', JSON.stringify(userObj));
+
+    // If invited by a friend, save them in contacts
+    if (inviterEmail) {
+      const contactsKey = `chathub_contacts_${userObj.email}`;
+      const existing = JSON.parse(localStorage.getItem(contactsKey) || '[]');
+      const roomId = redirectUrl ? redirectUrl.split('/chat/')[1] : `room_${Date.now()}`;
+      
+      if (!existing.some(c => c.email === inviterEmail)) {
+        existing.unshift({
+          id: roomId,
+          name: inviterName || inviterEmail,
+          email: inviterEmail,
+          lastMessage: 'Connected via invite link',
+          time: 'Just now',
+          unread: 0,
+          online: true
+        });
+        localStorage.setItem(contactsKey, JSON.stringify(existing));
+      }
+    }
+
+    if (redirectUrl) {
+      navigate(redirectUrl);
+    } else {
+      navigate('/inbox');
     }
   };
 
   return (
     <div 
       style={{
-        backgroundColor: isDarkMode ? '#101416' : '#f1f5f9',
+        backgroundColor: isDarkMode ? '#101416' : '#f8fafc',
+        color: isDarkMode ? '#ffffff' : '#0f172a',
         minHeight: '100vh',
         width: '100%',
         display: 'flex',
@@ -99,27 +115,25 @@ const Auth = () => {
         justifyContent: 'center',
         padding: '24px 16px',
         fontFamily: "'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-        boxSizing: 'border-box'
+        boxSizing: 'border-box',
+        transition: 'background-color 0.3s ease'
       }}
     >
-      <div style={{ width: '100%', maxWidth: '420px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        
-        {/* Glowing Green Top Banner */}
-        <div 
-          style={{
-            width: '100%',
-            backgroundColor: isDarkMode ? '#12181a' : '#ffffff',
-            borderRadius: '24px',
-            padding: '24px 20px',
-            marginBottom: '24px',
-            border: '1.5px solid #22c55e',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
-            boxSizing: 'border-box'
-          }}
-        >
+      <div 
+        style={{
+          width: '100%',
+          maxWidth: '430px',
+          backgroundColor: isDarkMode ? '#12181a' : '#ffffff',
+          borderRadius: '24px',
+          padding: '36px 28px',
+          boxShadow: isDarkMode ? '0 20px 50px rgba(0,0,0,0.6)' : '0 15px 35px rgba(0,0,0,0.06)',
+          border: isDarkMode ? '1px solid #1e2629' : '1px solid #e2e8f0',
+          position: 'relative',
+          boxSizing: 'border-box'
+        }}
+      >
+        {/* Glowing Top ChatHub Logo Header */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '24px' }}>
           <div 
             style={{
               width: '84px',
@@ -129,7 +143,7 @@ const Auth = () => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginBottom: '12px',
+              marginBottom: '14px',
               position: 'relative',
               boxShadow: '0 0 25px rgba(34, 197, 94, 0.45)'
             }}
@@ -142,160 +156,138 @@ const Auth = () => {
             </span>
           </div>
 
-          <h2 style={{ color: isDarkMode ? '#ffffff' : '#0f172a', fontSize: '28px', fontWeight: '800', margin: '0 0 6px 0' }}>
-            Chathub
-          </h2>
-          <p style={{ color: isDarkMode ? '#94a3b8' : '#64748b', fontSize: '14px', margin: 0, textAlign: 'center' }}>
-            {isLogin ? 'Sign in to access your chats' : 'Fast, scannable messaging for people and teams'}
+          <h1 style={{ fontSize: '26px', fontWeight: '800', margin: '0 0 6px 0', letterSpacing: '-0.5px' }}>
+            Chat<span style={{ color: '#22c55e' }}>Hub</span>
+          </h1>
+
+          <p style={{ fontSize: '13.5px', color: isDarkMode ? '#94a3b8' : '#64748b', textAlign: 'center', margin: 0, lineHeight: 1.4 }}>
+            {inviterName 
+              ? `Join conversation with ${inviterName}` 
+              : (step === 'profile' ? 'Setup your profile to continue' : 'Connect seamlessly with your team & friends')}
           </p>
         </div>
 
-        {/* Error Feedback Message Box */}
+        {/* Feature Badges Row */}
+        <div 
+          style={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            gap: '12px', 
+            marginBottom: '24px',
+            fontSize: '11.5px',
+            color: isDarkMode ? '#cbd5e1' : '#64748b',
+            fontWeight: '600'
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <ShieldCheck size={14} color="#22c55e" /> Encrypted
+          </span>
+          <span>•</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <Zap size={14} color="#3b82f6" /> Real-time
+          </span>
+        </div>
+
+        {/* Error Alert Box */}
         {error && (
-          <div style={{ width: '100%', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', color: '#ef4444', padding: '12px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: '600', marginBottom: '16px', textAlign: 'center', boxSizing: 'border-box' }}>
+          <div 
+            style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              color: '#ef4444',
+              padding: '12px 14px',
+              borderRadius: '12px',
+              fontSize: '13px',
+              marginBottom: '20px',
+              border: '1px solid rgba(239, 68, 68, 0.25)',
+              textAlign: 'center',
+              fontWeight: '500'
+            }}
+          >
             {error}
           </div>
         )}
 
-        {/* Success Feedback Message Box */}
-        {successMsg && (
-          <div style={{ width: '100%', backgroundColor: 'rgba(34, 197, 94, 0.15)', border: '1px solid #22c55e', color: '#22c55e', padding: '12px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: '600', marginBottom: '16px', textAlign: 'center', boxSizing: 'border-box' }}>
-            {successMsg}
-          </div>
-        )}
-
-        {step === 'auth' ? (
-          <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {!isLogin && (
-              <>
-                <div style={{ position: 'relative' }}>
-                  <User size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
-                  <input 
-                    type="text" 
-                    placeholder="Name" 
-                    value={name} 
-                    onChange={(e) => setName(e.target.value)} 
-                    required 
-                    style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1px solid #27353a', backgroundColor: '#151c1f', color: '#ffffff', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
-                  />
-                </div>
-
-                <div style={{ position: 'relative' }}>
-                  <Phone size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
-                  <input 
-                    type="tel" 
-                    placeholder="Phone Number" 
-                    value={phone} 
-                    onChange={(e) => setPhone(e.target.value)} 
-                    style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1px solid #27353a', backgroundColor: '#151c1f', color: '#ffffff', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
-                  />
-                </div>
-              </>
-            )}
-
+        {/* Step 1: Email Form */}
+        {step === 'email' && (
+          <form onSubmit={handleSendOtp} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div style={{ position: 'relative' }}>
               <Mail size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
               <input 
                 type="email" 
-                placeholder="Email Address" 
+                placeholder="Enter your email address" 
                 value={email} 
                 onChange={(e) => setEmail(e.target.value)} 
                 required 
-                style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1px solid #27353a', backgroundColor: '#151c1f', color: '#ffffff', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
+                style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: isDarkMode ? '1px solid #27353a' : '1px solid #cbd5e1', backgroundColor: isDarkMode ? '#151c1f' : '#f8fafc', color: isDarkMode ? '#ffffff' : '#0f172a', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }} 
               />
             </div>
-
-            <div style={{ position: 'relative' }}>
-              <Lock size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
-              <input 
-                type="password" 
-                placeholder="Password" 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)} 
-                required 
-                style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1px solid #27353a', backgroundColor: '#151c1f', color: '#ffffff', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
-              />
-            </div>
-
             <button 
               type="submit" 
-              disabled={loading}
-              style={{
-                width: '100%',
-                backgroundColor: '#22c55e',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: '14px',
-                padding: '16px',
-                fontSize: '16px',
-                fontWeight: '800',
-                cursor: 'pointer',
-                marginTop: '6px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                boxShadow: '0 6px 20px rgba(34, 197, 94, 0.35)'
-              }}
+              disabled={loading} 
+              style={{ width: '100%', backgroundColor: '#22c55e', color: '#ffffff', border: 'none', borderRadius: '14px', padding: '15px', fontSize: '15px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', boxShadow: '0 6px 20px rgba(34, 197, 94, 0.35)', marginTop: '4px' }}
             >
-              {loading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Join')} <ArrowRight size={18} />
+              {loading ? 'Sending code...' : 'Continue with Email'} <ArrowRight size={18} />
             </button>
-
-            <div style={{ textAlign: 'center', marginTop: '10px' }}>
-              <button 
-                type="button" 
-                onClick={() => { setIsLogin(!isLogin); setError(''); setSuccessMsg(''); }}
-                style={{ background: 'none', border: 'none', color: '#22c55e', cursor: 'pointer', fontSize: '14px', fontWeight: '600' }}
-              >
-                {isLogin ? "Need an account? Join" : "Already have an account? Sign In"}
-              </button>
-            </div>
           </form>
-        ) : (
-          /* OTP Verification Form */
-          <form onSubmit={handleVerifyOtp} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <p style={{ textAlign: 'center', fontSize: '14px', color: '#94a3b8', margin: '0 0 8px 0' }}>
-              Enter the 6-digit verification code sent to <strong style={{ color: '#22c55e' }}>{email}</strong>
-            </p>
+        )}
 
+        {/* Step 2: OTP Form */}
+        {step === 'otp' && (
+          <form onSubmit={handleVerifyOtp} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <p style={{ color: '#94a3b8', fontSize: '13px', textAlign: 'center', margin: 0 }}>
+              Enter the 6-digit OTP code sent to <strong style={{ color: '#22c55e' }}>{email}</strong>
+            </p>
             <div style={{ position: 'relative' }}>
               <ShieldCheck size={20} style={{ position: 'absolute', left: '16px', top: '16px', color: '#22c55e' }} />
               <input 
                 type="text" 
-                maxLength={6}
-                placeholder="6-Digit OTP" 
+                maxLength={6} 
+                placeholder="OTP Code" 
                 value={otp} 
                 onChange={(e) => setOtp(e.target.value)} 
                 required 
-                style={{ width: '100%', padding: '16px 16px 16px 48px', borderRadius: '14px', border: '1.5px solid #22c55e', backgroundColor: '#151c1f', color: '#ffffff', fontSize: '20px', fontWeight: '800', letterSpacing: '6px', textAlign: 'center', outline: 'none', boxSizing: 'border-box' }}
+                style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1.5px solid #22c55e', backgroundColor: isDarkMode ? '#151c1f' : '#f8fafc', color: isDarkMode ? '#ffffff' : '#0f172a', fontSize: '20px', fontWeight: 'bold', letterSpacing: '4px', textAlign: 'center', outline: 'none', boxSizing: 'border-box' }} 
               />
             </div>
-
             <button 
               type="submit" 
-              disabled={loading}
-              style={{
-                width: '100%',
-                backgroundColor: '#22c55e',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: '14px',
-                padding: '16px',
-                fontSize: '16px',
-                fontWeight: '800',
-                cursor: 'pointer',
-                boxShadow: '0 6px 20px rgba(34, 197, 94, 0.35)'
-              }}
+              disabled={loading} 
+              style={{ width: '100%', backgroundColor: '#22c55e', color: '#ffffff', border: 'none', borderRadius: '14px', padding: '15px', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 6px 20px rgba(34, 197, 94, 0.35)', marginTop: '4px' }}
             >
-              {loading ? 'Verifying OTP...' : 'Verify OTP & Enter ChatHub'}
+              {loading ? 'Verifying...' : 'Verify OTP'}
             </button>
-
             <button 
               type="button" 
-              onClick={() => { setStep('auth'); setError(''); }}
-              style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '14px', textAlign: 'center' }}
+              onClick={() => { setStep('email'); setError(''); }} 
+              style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '13px', textAlign: 'center', marginTop: '6px' }}
             >
-              Back to Join
+              Use a different email
+            </button>
+          </form>
+        )}
+
+        {/* Step 3: Profile Setup */}
+        {step === 'profile' && (
+          <form onSubmit={handleFinishProfile} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <p style={{ color: '#94a3b8', fontSize: '13px', textAlign: 'center', margin: 0 }}>
+              Choose your Display Name for ChatHub:
+            </p>
+            <div style={{ position: 'relative' }}>
+              <User size={18} style={{ position: 'absolute', left: '16px', top: '16px', color: '#94a3b8' }} />
+              <input 
+                type="text" 
+                placeholder="Your Full Name (e.g. Laiba)" 
+                value={name} 
+                onChange={(e) => setName(e.target.value)} 
+                required 
+                style={{ width: '100%', padding: '15px 16px 15px 46px', borderRadius: '14px', border: '1.5px solid #22c55e', backgroundColor: isDarkMode ? '#151c1f' : '#f8fafc', color: isDarkMode ? '#ffffff' : '#0f172a', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }} 
+              />
+            </div>
+            <button 
+              type="submit" 
+              style={{ width: '100%', backgroundColor: '#22c55e', color: '#ffffff', border: 'none', borderRadius: '14px', padding: '15px', fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 6px 20px rgba(34, 197, 94, 0.35)', marginTop: '4px' }}
+            >
+              Complete & Enter Chats
             </button>
           </form>
         )}
