@@ -20,25 +20,28 @@ const Auth = () => {
   const [error, setError] = useState('');
 
   const hostname = window.location.hostname || 'localhost';
- // Auth.jsx ke upar ya fetch ke andar check karein:
-const API_BASE = "https://a0c7ab1e8bd767d5-154-192-215-40.serveousercontent.com";
+ const API_BASE = "https://a0c7ab1e8bd767d5-154-192-215-40.serveousercontent.com";
 
-// Send OTP function ke andar:
-const handleSendOtp = async () => {
-  try {
-    const res = await fetch(`${API_BASE}/api/auth/send-otp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ email })
-    });
-    const data = await res.json();
-    console.log(data);
-  } catch (err) {
-    console.error(err);
-  }
-};
+  const handleSendOtp = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Could not send OTP');
+      setStep('otp');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleVerifyOtp = async (e) => {
     e.preventDefault();
