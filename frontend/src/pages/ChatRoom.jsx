@@ -5,31 +5,16 @@ import { useSocket } from '../context/SocketContext';
 import { getAvatarColor, getInitials } from './Inbox';
 import { encryptMessage, decryptMessage, getOneToOneRoomId } from '../utils/crypto';
 import { 
-  ArrowLeft, 
-  Phone, 
-  Video, 
-  MoreVertical, 
-  Paperclip, 
-  Smile, 
-  Mic, 
-  Send, 
-  Check, 
-  CheckCheck, 
-  Play, 
-  Pause,
-  Image as ImageIcon, 
-  Camera, 
-  FileText, 
-  X, 
-  Square,
-  Trash2,
-  PhoneOff,
-  User,
-  Mail,
-  Lock
+  ArrowLeft, Phone, Video, MoreVertical, Paperclip, Smile, Mic, Send, 
+  Check, CheckCheck, Play, Pause, Image as ImageIcon, Camera, FileText, 
+  X, Square, Trash2, PhoneOff, User, Mail, Lock
 } from 'lucide-react';
 
 const emojis = ['😀', '😂', '😍', '🔥', '👍', '🎉', '❤️', '🙌', '✨', '🚀', '💯', '👏'];
+
+const rtcConfig = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+};
 
 const ChatRoom = () => {
   const { id } = useParams();
@@ -66,11 +51,16 @@ const ChatRoom = () => {
   const [callStatus, setCallStatus] = useState('calling');
   const [callDuration, setCallDuration] = useState(0);
 
-  // --- NAYE VIDEO/AUDIO CALL STATES & REFS ---
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const [localStream, setLocalStream] = useState(null);
+  const localStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
+
+  // --- IN-APP CAMERA STATES ---
+  const [showCameraModal, setShowCameraModal] = useState(false);
+  const [photoStream, setPhotoStream] = useState(null);
+  const photoVideoRef = useRef(null);
+  const photoCanvasRef = useRef(null);
 
   // --- VOICE NOTE REFS ---
   const [isRecording, setIsRecording] = useState(false);
@@ -78,13 +68,11 @@ const ChatRoom = () => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // --- PLAYBACK REFS ---
   const [playingAudioId, setPlayingAudioId] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const currentAudioRef = useRef(null);
 
   const fileInputRef = useRef(null);
-  const cameraInputRef = useRef(null);
   const docInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -92,16 +80,6 @@ const ChatRoom = () => {
     localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(messages));
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping, roomId]);
-
-  useEffect(() => {
-    let timer;
-    if (isRecording) {
-      timer = setInterval(() => setRecordSeconds((prev) => prev + 1), 1000);
-    } else {
-      setRecordSeconds(0);
-    }
-    return () => clearInterval(timer);
-  }, [isRecording]);
 
   useEffect(() => {
     let timer;
@@ -113,37 +91,37 @@ const ChatRoom = () => {
     return () => clearInterval(timer);
   }, [activeCall, callStatus]);
 
-  // --- CAMERA & MIC ON/OFF LOGIC ---
-  const startMediaStream = async (callType) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: callType === 'video',
-        audio: true
-      });
-      setLocalStream(stream);
-      // Timeout takay video tag pehle render ho jaye DOM mein
-      setTimeout(() => {
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-      }, 100);
-      return stream;
-    } catch (err) {
-      alert("Camera/Mic ki permission nahi mili! Kripya HTTPS link use karein (Vercel ya Cloudflare).");
-      console.error(err);
-      return null;
+  useEffect(() => {
+    let timer;
+    if (isRecording) {
+      timer = setInterval(() => setRecordSeconds((prev) => prev + 1), 1000);
+    } else {
+      setRecordSeconds(0);
     }
-  };
+    return () => clearInterval(timer);
+  }, [isRecording]);
 
-  const stopMediaStream = () => {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
+  // --- WebRTC Peer Connection Setup ---
+  const setupPeerConnection = (stream) => {
+    const pc = new RTCPeerConnection(rtcConfig);
+    peerConnectionRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socket) {
+        socket.emit('webrtc_ice_candidate', { roomId, candidate: event.candidate });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
+    };
+
+    if (stream) {
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
     }
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
+    return pc;
   };
 
   useEffect(() => {
@@ -152,36 +130,25 @@ const ChatRoom = () => {
     socket.emit('register_user', currentUser.email);
     socket.emit('join_room', { roomId, userEmail: currentUser.email });
 
-    socket.on('room_presence', ({ isOnline }) => {
-      setIsRecipientOnline(isOnline);
-    });
+    socket.on('room_presence', ({ isOnline }) => { setIsRecipientOnline(isOnline); });
 
     socket.on('receive_message', async (data) => {
       if (data.roomId === roomId) {
         let decryptedText = data.text;
         if (data.cipherText) {
-          try {
-            decryptedText = await decryptMessage(data.cipherText, roomId);
-          } catch (e) {
-            decryptedText = data.text || 'Encrypted Message';
-          }
+          try { decryptedText = await decryptMessage(data.cipherText, roomId); } 
+          catch (e) { decryptedText = data.text || 'Encrypted Message'; }
         }
-
         setMessages((prev) => {
           if (prev.some((m) => m.id === data.id)) return prev;
-          const updated = [...prev, { ...data, text: decryptedText, sender: 'them', status: 'seen' }];
-          localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
-          return updated;
+          return [...prev, { ...data, text: decryptedText, sender: 'them', status: 'seen' }];
         });
-
         socket.emit('mark_seen', { roomId, messageId: data.id });
       }
     });
 
     socket.on('message_seen', ({ messageId }) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId || !messageId ? { ...m, status: 'seen' } : m))
-      );
+      setMessages((prev) => prev.map((m) => (m.id === messageId || !messageId ? { ...m, status: 'seen' } : m)));
     });
 
     socket.on('user_typing', (data) => {
@@ -191,24 +158,44 @@ const ChatRoom = () => {
       }
     });
 
+    // --- WEBRTC SIGNALING HANDLERS ---
     socket.on('incoming_call_ring', ({ type }) => {
       setActiveCall(type);
       setCallStatus('connected');
     });
 
-    socket.on('call_connected', () => {
+    socket.on('call_connected', async () => {
       setCallStatus('connected');
+      // Caller initiates the offer once receiver accepts
+      const pc = setupPeerConnection(localStreamRef.current);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('webrtc_offer', { roomId, offer });
     });
 
-    socket.on('call_rejected', () => {
-      stopMediaStream();
-      setActiveCall(null);
+    socket.on('webrtc_offer', async ({ offer }) => {
+      const pc = setupPeerConnection(localStreamRef.current);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('webrtc_answer', { roomId, answer });
     });
 
-    socket.on('call_terminated', () => {
-      stopMediaStream();
-      setActiveCall(null);
+    socket.on('webrtc_answer', async ({ answer }) => {
+      if (peerConnectionRef.current) {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+      }
     });
+
+    socket.on('webrtc_ice_candidate', async ({ candidate }) => {
+      if (peerConnectionRef.current) {
+        try { await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)); } 
+        catch (e) { console.error('Error adding ICE candidate', e); }
+      }
+    });
+
+    socket.on('call_rejected', () => { stopMediaStream(); setActiveCall(null); });
+    socket.on('call_terminated', () => { stopMediaStream(); setActiveCall(null); });
 
     return () => {
       socket.off('room_presence');
@@ -217,22 +204,85 @@ const ChatRoom = () => {
       socket.off('user_typing');
       socket.off('incoming_call_ring');
       socket.off('call_connected');
+      socket.off('webrtc_offer');
+      socket.off('webrtc_answer');
+      socket.off('webrtc_ice_candidate');
       socket.off('call_rejected');
       socket.off('call_terminated');
     };
   }, [socket, roomId, currentUser.email]);
 
+  // --- CAMERA LOGIC ---
+  const startMediaStream = async (callType) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: callType === 'video',
+        audio: true
+      });
+      localStreamRef.current = stream;
+      setTimeout(() => {
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      }, 100);
+      return stream;
+    } catch (err) {
+      alert("Camera/Mic ki permission nahi mili! Vercel ya Cloudflare HTTPS link use karein.");
+      return null;
+    }
+  };
+
+  const stopMediaStream = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+  };
+
+  // --- CALL HANDLERS ---
+  const handleStartCall = async (type) => {
+    setActiveCall(type);
+    setCallStatus('calling');
+    await startMediaStream(type);
+    if (socket) {
+      socket.emit('start_call', {
+        roomId,
+        callerName: currentUser.name,
+        callerEmail: currentUser.email,
+        recipientEmail: contact.email,
+        type
+      });
+    }
+  };
+
+  const handleEndCall = () => {
+    stopMediaStream();
+    setActiveCall(null);
+    if (socket) socket.emit('end_call', { roomId });
+  };
+
+  // Accept call logic for when receiver clicks "Accept" in Inbox and comes here
+  useEffect(() => {
+    if (location.state?.incomingCall) {
+      setActiveCall(location.state.incomingCall.type);
+      setCallStatus('connecting...');
+      startMediaStream(location.state.incomingCall.type).then(() => {
+        socket.emit('accept_call', { roomId });
+      });
+    }
+  }, [location.state, roomId, socket]);
+
+  // --- MESSAGING LOGIC ---
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!inputMessage.trim()) return;
 
     const rawText = inputMessage.trim();
     let cipherText = '';
-    try {
-      cipherText = await encryptMessage(rawText, roomId);
-    } catch (e) {
-      cipherText = rawText;
-    }
+    try { cipherText = await encryptMessage(rawText, roomId); } 
+    catch (e) { cipherText = rawText; }
 
     const newMessage = {
       id: Date.now(),
@@ -261,49 +311,69 @@ const ChatRoom = () => {
     setShowAttachMenu(false);
   };
 
+  // --- ATTACHMENTS & VOICE NOTES ---
+  const openPhotoCamera = async () => {
+    setShowAttachMenu(false);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setPhotoStream(stream);
+      setShowCameraModal(true);
+      setTimeout(() => { if (photoVideoRef.current) photoVideoRef.current.srcObject = stream; }, 100);
+    } catch (err) { alert("Camera ki permission error!"); }
+  };
+
+  const closePhotoCamera = () => {
+    if (photoStream) { photoStream.getTracks().forEach(track => track.stop()); setPhotoStream(null); }
+    setShowCameraModal(false);
+  };
+
+  const capturePhoto = () => {
+    if (photoVideoRef.current && photoCanvasRef.current) {
+      const video = photoVideoRef.current;
+      const canvas = photoCanvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageUrl = canvas.toDataURL('image/jpeg');
+
+      const newMediaMsg = {
+        id: Date.now(), roomId, sender: 'me', senderName: currentUser.name, senderEmail: currentUser.email,
+        recipientEmail: contact.email, mediaUrl: imageUrl, fileName: 'captured_photo.jpg',
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: isRecipientOnline ? 'delivered' : 'sent', type: 'image'
+      };
+
+      if (socket) socket.emit('send_message', newMediaMsg);
+      setMessages((prev) => [...prev, newMediaMsg]);
+      closePhotoCamera();
+    }
+  };
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-
-      mediaRecorderRef.current.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-
+      mediaRecorderRef.current.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mediaRecorderRef.current.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
           const newVoiceMsg = {
-            id: Date.now(),
-            roomId,
-            sender: 'me',
-            senderName: currentUser.name,
-            senderEmail: currentUser.email,
-            recipientEmail: contact.email,
-            audioData: reader.result,
-            audioDuration: `0:${recordSeconds < 10 ? '0' : ''}${recordSeconds || 3}`,
+            id: Date.now(), roomId, sender: 'me', senderName: currentUser.name, senderEmail: currentUser.email,
+            recipientEmail: contact.email, audioData: reader.result, audioDuration: `0:${recordSeconds < 10 ? '0' : ''}${recordSeconds || 3}`,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            status: isRecipientOnline ? 'delivered' : 'sent',
-            type: 'voice'
+            status: isRecipientOnline ? 'delivered' : 'sent', type: 'voice'
           };
-
           if (socket) socket.emit('send_message', newVoiceMsg);
-          setMessages((prev) => {
-            const updated = [...prev, newVoiceMsg];
-            localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
-            return updated;
-          });
+          setMessages((prev) => [...prev, newVoiceMsg]);
         };
       };
-
       mediaRecorderRef.current.start();
       setIsRecording(true);
-    } catch (err) {
-      alert('Microphone permission required for voice notes.');
-    }
+    } catch (err) { alert('Microphone permission required.'); }
   };
 
   const stopRecording = () => {
@@ -337,57 +407,19 @@ const ChatRoom = () => {
   const handleFileUpload = (e, fileType) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onloadend = () => {
       const newMediaMsg = {
-        id: Date.now(),
-        roomId,
-        sender: 'me',
-        senderName: currentUser.name,
-        senderEmail: currentUser.email,
-        recipientEmail: contact.email,
-        mediaUrl: reader.result,
-        fileName: file.name,
+        id: Date.now(), roomId, sender: 'me', senderName: currentUser.name, senderEmail: currentUser.email,
+        recipientEmail: contact.email, mediaUrl: reader.result, fileName: file.name,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        status: isRecipientOnline ? 'delivered' : 'sent',
-        type: fileType
+        status: isRecipientOnline ? 'delivered' : 'sent', type: fileType
       };
-
       if (socket) socket.emit('send_message', newMediaMsg);
-      setMessages((prev) => {
-        const updated = [...prev, newMediaMsg];
-        localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
-        return updated;
-      });
+      setMessages((prev) => [...prev, newMediaMsg]);
       setShowAttachMenu(false);
     };
     reader.readAsDataURL(file);
-  };
-
-  // --- CALL START & END TRIGGERS ---
-  const handleStartCall = async (type) => {
-    setActiveCall(type);
-    setCallStatus('calling');
-    
-    // Yahan camera aur mic on ho jayega
-    await startMediaStream(type);
-
-    if (socket) {
-      socket.emit('start_call', {
-        roomId,
-        callerName: currentUser.name,
-        callerEmail: currentUser.email,
-        recipientEmail: contact.email,
-        type
-      });
-    }
-  };
-
-  const handleEndCall = () => {
-    stopMediaStream(); // Call end hote hi camera band
-    setActiveCall(null);
-    if (socket) socket.emit('end_call', { roomId });
   };
 
   return (
@@ -399,39 +431,25 @@ const ChatRoom = () => {
           <div onClick={() => setShowProfileDrawer(true)} style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', flex: 1, minWidth: 0 }}>
             <button onClick={(e) => { e.stopPropagation(); navigate('/inbox'); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><ArrowLeft size={22} /></button>
             <div style={{ position: 'relative' }}>
-              <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: getAvatarColor(contact.name), color: '#ffffff', fontWeight: '700', fontSize: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {getInitials(contact.name)}
-              </div>
+              <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: getAvatarColor(contact.name), color: '#ffffff', fontWeight: '700', fontSize: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{getInitials(contact.name)}</div>
               {isRecipientOnline && <span style={{ position: 'absolute', bottom: '1px', right: '1px', width: '11px', height: '11px', backgroundColor: '#22c55e', border: '2px solid #12181a', borderRadius: '50%' }} />}
             </div>
             <div>
               <h2 style={{ fontSize: '15px', fontWeight: '700', margin: 0 }}>{contact.name}</h2>
-              <span style={{ fontSize: '11px', color: isTyping ? '#3b82f6' : (isRecipientOnline ? '#22c55e' : '#94a3b8'), fontWeight: '600' }}>
-                {isTyping ? 'typing...' : (isRecipientOnline ? 'Online' : 'Offline')}
-              </span>
+              <span style={{ fontSize: '11px', color: isTyping ? '#3b82f6' : (isRecipientOnline ? '#22c55e' : '#94a3b8'), fontWeight: '600' }}>{isTyping ? 'typing...' : (isRecipientOnline ? 'Online' : 'Offline')}</span>
             </div>
           </div>
-
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: isDarkMode ? '#cbd5e1' : '#475569' }}>
             <button onClick={() => handleStartCall('audio')} title="Voice Call" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><Phone size={20} /></button>
             <button onClick={() => handleStartCall('video')} title="Video Call" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><Video size={21} /></button>
             <button onClick={() => setShowOptionsMenu(!showOptionsMenu)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><MoreVertical size={20} /></button>
-
-            {showOptionsMenu && (
-              <div style={{ position: 'absolute', right: '16px', top: '50px', backgroundColor: '#1c2427', border: '1px solid #27353a', borderRadius: '12px', padding: '8px 0', minWidth: '160px', zIndex: 30, boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
-                <button onClick={() => { setShowProfileDrawer(true); setShowOptionsMenu(false); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 16px', background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}><User size={16} /> View Profile</button>
-                <button onClick={() => { setMessages([]); localStorage.removeItem(`chathub_msgs_${roomId}`); setShowOptionsMenu(false); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 16px', background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}><Trash2 size={16} /> Clear Chat</button>
-              </div>
-            )}
           </div>
         </div>
 
         {/* E2EE Banner */}
         <div style={{ backgroundColor: isDarkMode ? '#151c1f' : '#f1f5f9', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', borderBottom: isDarkMode ? '1px solid #1e2629' : '1px solid #e2e8f0' }}>
           <Lock size={12} color="#22c55e" />
-          <span style={{ fontSize: '11px', color: isDarkMode ? '#94a3b8' : '#64748b', fontWeight: '500' }}>
-            Messages are end-to-end encrypted with AES-256
-          </span>
+          <span style={{ fontSize: '11px', color: isDarkMode ? '#94a3b8' : '#64748b', fontWeight: '500' }}>Messages are end-to-end encrypted</span>
         </div>
 
         {/* Message Feed */}
@@ -440,41 +458,17 @@ const ChatRoom = () => {
             const isMe = msg.sender === 'me' || msg.senderEmail === currentUser.email;
             return (
               <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
-                <div style={{ maxWidth: '80%', padding: msg.type === 'voice' ? '10px 14px' : (msg.type === 'image' ? '6px' : '12px 16px'), borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', backgroundColor: isMe ? '#22c55e' : (isDarkMode ? '#1a2226' : '#ffffff'), color: isMe ? '#ffffff' : (isDarkMode ? '#f1f5f9' : '#0f172a'), boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
-                  
+                <div style={{ maxWidth: '80%', padding: msg.type === 'voice' ? '10px 14px' : (msg.type === 'image' ? '6px' : '12px 16px'), borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px', backgroundColor: isMe ? '#22c55e' : (isDarkMode ? '#1a2226' : '#ffffff'), color: isMe ? '#ffffff' : (isDarkMode ? '#f1f5f9' : '#0f172a') }}>
                   {msg.type === 'image' && <img src={msg.mediaUrl} alt="Media" style={{ width: '100%', maxWidth: '240px', borderRadius: '14px', display: 'block' }} />}
-                  
-                  {msg.type === 'document' && (
-                    <a href={msg.mediaUrl} download={msg.fileName || 'file.pdf'} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'inherit', textDecoration: 'none' }}>
-                      <FileText size={20} /><span style={{ fontSize: '13px', fontWeight: 'bold' }}>{msg.fileName || 'Document'}</span>
-                    </a>
-                  )}
-
                   {msg.type === 'voice' && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: '200px' }}>
                       <button onClick={() => togglePlayAudio(msg.id, msg.audioData)} style={{ width: '34px', height: '34px', borderRadius: '50%', backgroundColor: '#fff', border: 'none', color: '#22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
                         {playingAudioId === msg.id ? <Pause size={16} fill="#22c55e" /> : <Play size={16} fill="#22c55e" />}
                       </button>
-                      <div style={{ flex: 1, height: '4px', backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: '2px' }} />
-                      <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{msg.audioDuration || '0:05'}</span>
-                      <button onClick={changeSpeed} style={{ backgroundColor: 'rgba(0,0,0,0.25)', border: 'none', borderRadius: '8px', color: '#fff', fontSize: '11px', padding: '3px 6px', cursor: 'pointer', fontWeight: 'bold' }}>
-                        {playbackSpeed}x
-                      </button>
+                      <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{msg.audioDuration}</span>
                     </div>
                   )}
-
                   {msg.type === 'text' && <p style={{ margin: 0, fontSize: '14.5px', lineHeight: 1.45 }}>{msg.text}</p>}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
-                  <span style={{ fontSize: '11px', color: isDarkMode ? '#64748b' : '#94a3b8' }}>{msg.time}</span>
-                  {isMe && (
-                    <>
-                      {msg.status === 'sent' && <Check size={14} color="#94a3b8" />}
-                      {msg.status === 'delivered' && <CheckCheck size={14} color="#94a3b8" />}
-                      {msg.status === 'seen' && <CheckCheck size={14} color="#38bdf8" />}
-                    </>
-                  )}
                 </div>
               </div>
             );
@@ -482,16 +476,7 @@ const ChatRoom = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Emoji Bar */}
-        {showEmojiPicker && (
-          <div style={{ position: 'absolute', bottom: '75px', right: '60px', backgroundColor: '#1a2226', borderRadius: '16px', padding: '10px', display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px', zIndex: 25 }}>
-            {emojis.map((emoji, index) => (
-              <button key={index} type="button" onClick={() => { setInputMessage((prev) => prev + emoji); setShowEmojiPicker(false); }} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}>{emoji}</button>
-            ))}
-          </div>
-        )}
-
-        {/* Attachments */}
+        {/* Attachments Menu */}
         {showAttachMenu && (
           <div style={{ position: 'absolute', bottom: '75px', left: '16px', backgroundColor: '#1a2226', borderRadius: '16px', padding: '12px', display: 'flex', gap: '16px', zIndex: 20 }}>
             <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#cbd5e1' }}>
@@ -499,11 +484,10 @@ const ChatRoom = () => {
               <span style={{ fontSize: '11px', fontWeight: 'bold' }}>Gallery</span>
               <input type="file" accept="image/*" ref={fileInputRef} onChange={(e) => handleFileUpload(e, 'image')} style={{ display: 'none' }} />
             </label>
-            <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#cbd5e1' }}>
+            <button type="button" onClick={openPhotoCamera} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#cbd5e1', background: 'none', border: 'none' }}>
               <div style={{ width: '44px', height: '44px', borderRadius: '50%', backgroundColor: '#ec4899', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}><Camera size={20} /></div>
-              <span style={{ fontSize: '11px', fontWeight: 'bold' }}>Camera</span>
-              <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={(e) => handleFileUpload(e, 'image')} style={{ display: 'none' }} />
-            </label>
+              <span style={{ fontSize: '11px', fontWeight: 'bold', fontFamily: 'inherit' }}>Camera</span>
+            </button>
             <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#cbd5e1' }}>
               <div style={{ width: '44px', height: '44px', borderRadius: '50%', backgroundColor: '#8b5cf6', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}><FileText size={20} /></div>
               <span style={{ fontSize: '11px', fontWeight: 'bold' }}>Document</span>
@@ -517,20 +501,12 @@ const ChatRoom = () => {
           <button type="button" onClick={() => setShowAttachMenu(!showAttachMenu)} style={{ background: showAttachMenu ? '#27353a' : 'none', border: 'none', borderRadius: '50%', cursor: 'pointer', color: showAttachMenu ? '#22c55e' : '#94a3b8', padding: '6px' }}>
             {showAttachMenu ? <X size={20} /> : <Paperclip size={20} />}
           </button>
-
-          {isRecording ? (
-            <div style={{ flex: 1, backgroundColor: 'rgba(239, 68, 68, 0.15)', borderRadius: '22px', padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#ef4444', fontWeight: 'bold' }}>
-              <span>🎙️ Recording Audio... {recordSeconds}s</span>
-              <button type="button" onClick={stopRecording} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Send</button>
+          
+          <form onSubmit={handleSendMessage} style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+            <div style={{ width: '100%', backgroundColor: isDarkMode ? '#182023' : '#f1f5f9', borderRadius: '22px', padding: '8px 14px', display: 'flex', alignItems: 'center', border: isDarkMode ? '1px solid #27353a' : '1px solid #e2e8f0' }}>
+              <input type="text" placeholder="Type a message..." value={inputMessage} onChange={(e) => { setInputMessage(e.target.value); if(socket) socket.emit('typing', { roomId }); }} style={{ background: 'transparent', border: 'none', outline: 'none', color: isDarkMode ? '#fff' : '#0f172a', fontSize: '14.5px', width: '100%' }} />
             </div>
-          ) : (
-            <form onSubmit={handleSendMessage} style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
-              <div style={{ width: '100%', backgroundColor: isDarkMode ? '#182023' : '#f1f5f9', borderRadius: '22px', padding: '8px 14px', display: 'flex', alignItems: 'center', border: isDarkMode ? '1px solid #27353a' : '1px solid #e2e8f0' }}>
-                <input type="text" placeholder="Type a message..." value={inputMessage} onChange={(e) => { setInputMessage(e.target.value); if (socket) socket.emit('typing', { roomId }); }} style={{ background: 'transparent', border: 'none', outline: 'none', color: isDarkMode ? '#fff' : '#0f172a', fontSize: '14.5px', width: '100%' }} />
-                <button type="button" onClick={() => setShowEmojiPicker(!showEmojiPicker)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: '2px' }}><Smile size={19} /></button>
-              </div>
-            </form>
-          )}
+          </form>
 
           {inputMessage.trim() ? (
             <button type="button" onClick={handleSendMessage} style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: '#22c55e', border: 'none', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Send size={18} /></button>
@@ -541,11 +517,10 @@ const ChatRoom = () => {
           )}
         </div>
 
-        {/* --- NAYA CALLING OVERLAY (CAMERA SCREEN KE SATH) --- */}
+        {/* --- CALLING OVERLAY (WebRTC Video Screen) --- */}
         {activeCall && (
           <div style={{ position: 'absolute', inset: 0, backgroundColor: '#090d0f', zIndex: 60, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             
-            {/* Remote User Screen (Doosre user ki screen, abhi black hogi kyunke WebRTC agle step mein lagega) */}
             <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {activeCall === 'video' ? (
                 <video 
@@ -568,50 +543,38 @@ const ChatRoom = () => {
               </div>
             </div>
 
-            {/* Local Camera (Aapki apni video feed) */}
             {activeCall === 'video' && (
               <div style={{ position: 'absolute', bottom: '120px', right: '20px', width: '100px', height: '140px', borderRadius: '12px', overflow: 'hidden', border: '2px solid #22c55e', backgroundColor: '#222', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
-                <video 
-                  ref={localVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
-                />
+                <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </div>
             )}
 
-            {/* End Call Button */}
             <div style={{ padding: '30px', display: 'flex', justifyContent: 'center', gap: '24px', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-              <button 
-                onClick={handleEndCall} 
-                style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#ef4444', color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              >
+              <button onClick={handleEndCall} style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#ef4444', color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <PhoneOff size={28} />
               </button>
             </div>
           </div>
         )}
 
-        {/* Profile Drawer */}
-        {showProfileDrawer && (
-          <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 50, display: 'flex', justifyContent: 'flex-end' }}>
-            <div style={{ width: '320px', height: '100%', backgroundColor: isDarkMode ? '#151c1f' : '#ffffff', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0 }}>Profile Details</h3>
-                <button onClick={() => setShowProfileDrawer(false)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer' }}><X size={20} /></button>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '70px', height: '70px', borderRadius: '50%', backgroundColor: getAvatarColor(contact.name), color: '#fff', fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {getInitials(contact.name)}
-                </div>
-                <h3 style={{ margin: 0 }}>{contact.name}</h3>
-                <span style={{ color: isRecipientOnline ? '#22c55e' : '#94a3b8', fontSize: '12px' }}>{isRecipientOnline ? 'Online' : 'Offline'}</span>
-              </div>
-              <div style={{ backgroundColor: '#1c2427', padding: '12px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
-                <Mail size={16} color="#22c55e" />
-                <span>{contact.email}</span>
-              </div>
+        {/* --- LIVE PHOTO CAPTURE MODAL --- */}
+        {showCameraModal && (
+          <div style={{ position: 'absolute', inset: 0, backgroundColor: '#000', zIndex: 70, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px', display: 'flex', justifyContent: 'space-between', color: '#fff', alignItems: 'center' }}>
+              <button onClick={closePhotoCamera} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}><X size={24} /></button>
+              <span style={{ fontWeight: 'bold', fontSize: '16px' }}>Take Photo</span>
+              <div style={{ width: '24px' }}></div>
+            </div>
+            
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
+              <video ref={photoVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <canvas ref={photoCanvasRef} style={{ display: 'none' }}></canvas>
+            </div>
+            
+            <div style={{ padding: '30px', display: 'flex', justifyContent: 'center', backgroundColor: '#111' }}>
+              <button onClick={capturePhoto} style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#fff', border: '4px solid #cbd5e1', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: '52px', height: '52px', borderRadius: '50%', backgroundColor: '#e2e8f0' }}></div>
+              </button>
             </div>
           </div>
         )}
