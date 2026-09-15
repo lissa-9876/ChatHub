@@ -12,19 +12,21 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// CORS setup to allow requests from Vercel & local
+// CORS configuration - Allow all origins (Vercel, Localhost, Network IP)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
 
+// Payload limits for images and voice notes
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-// Auth API Routes
+// Auth Routes (send-otp, verify-otp)
 app.use('/api/auth', authRoutes);
 
+// Helper function to get local IPv4
 const getLocalIP = () => {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -39,7 +41,7 @@ const getLocalIP = () => {
 
 const localIP = getLocalIP();
 
-// Email Transporter Configuration
+// Nodemailer Transporter Setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -51,8 +53,11 @@ const transporter = nodemailer.createTransport({
 // Real Email Invitation Endpoint
 app.post('/api/invite', async (req, res) => {
   const { senderName, senderEmail, recipientEmail, roomId } = req.body;
-  if (!recipientEmail) return res.status(400).json({ message: 'Recipient email is required' });
+  if (!recipientEmail) {
+    return res.status(400).json({ message: 'Recipient email is required' });
+  }
 
+  // Invitation Link format
   const joinUrl = `http://${localIP}:5173/auth?redirect=/chat/${roomId}&inviter=${encodeURIComponent(senderName || senderEmail)}&inviterEmail=${encodeURIComponent(senderEmail)}`;
 
   try {
@@ -83,7 +88,7 @@ app.post('/api/invite', async (req, res) => {
   }
 });
 
-// Socket Tracking
+// Socket.io Real-Time Engine
 const userSockets = new Map(); // email -> socketId
 const roomUsers = new Map();   // roomId -> Set(socketIds)
 
@@ -93,7 +98,7 @@ const io = new Server(server, {
 });
 
 io.on('connection', (socket) => {
-  // 1. User registers email globally
+  // 1. User registers email globally upon login
   socket.on('register_user', (email) => {
     if (email) {
       const cleanEmail = email.toLowerCase().trim();
@@ -103,7 +108,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. Join 1-to-1 Encrypted Room
+  // 2. Join 1-to-1 Room
   socket.on('join_room', ({ roomId, userEmail }) => {
     socket.join(roomId);
     if (!roomUsers.has(roomId)) roomUsers.set(roomId, new Set());
@@ -117,28 +122,27 @@ io.on('connection', (socket) => {
   socket.on('send_message', (data) => {
     const isReceiverInRoom = roomUsers.has(data.roomId) && roomUsers.get(data.roomId).size > 1;
 
-    // Broadcast inside room
+    // Room ke andar mojood doosre participant ko bhejein
     socket.to(data.roomId).emit('receive_message', {
       ...data,
+      sender: 'them',
       status: isReceiverInRoom ? 'delivered' : 'sent'
     });
 
-    // Global Notification Push to Recipient
+    // Global Push: Recipient ko notification aur data bhejta hai chahe wo room se bahar ho
     if (data.recipientEmail) {
       const recSocketId = userSockets.get(data.recipientEmail.toLowerCase().trim());
       if (recSocketId) {
         io.to(recSocketId).emit('global_unread_message', {
-          roomId: data.roomId,
-          senderName: data.senderName,
-          senderEmail: data.senderEmail,
-          cipherText: data.cipherText,
-          text: data.type === 'voice' ? '🎙️ Voice Note' : (data.type === 'image' ? '📷 Photo' : data.text),
-          time: data.time
+          ...data,
+          sender: 'them',
+          status: 'delivered'
         });
       }
     }
   });
 
+  // 4. Seen status & typing indicator
   socket.on('mark_seen', ({ roomId, messageId }) => {
     socket.to(roomId).emit('message_seen', { messageId });
   });
@@ -147,7 +151,7 @@ io.on('connection', (socket) => {
     socket.to(data.roomId).emit('user_typing', data);
   });
 
-  // Direct Call Signaling
+  // 5. Audio & Video Calling Signaling
   socket.on('start_call', ({ roomId, callerName, callerEmail, recipientEmail, type }) => {
     const cleanRecEmail = recipientEmail?.toLowerCase().trim();
     const recSocketId = userSockets.get(cleanRecEmail);
@@ -170,7 +174,7 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('call_terminated');
   });
 
-  // Disconnect
+  // 6. Handle Disconnect
   socket.on('disconnecting', () => {
     if (socket.userEmail) {
       userSockets.delete(socket.userEmail);
@@ -189,5 +193,6 @@ io.on('connection', (socket) => {
 
 const PORT = 5000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 ChatHub E2EE Server running on: http://${localIP}:${PORT}`);
+  console.log(`🚀 ChatHub Server running on port ${PORT}`);
+  console.log(`🌐 Local Network URL: http://${localIP}:${PORT}`);
 });
