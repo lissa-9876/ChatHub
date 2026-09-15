@@ -46,10 +46,8 @@ const ChatRoom = () => {
     email: location.state?.inviterEmail || 'friend@gmail.com'
   };
 
-  // Deterministic 1-to-1 encrypted room ID
   const roomId = getOneToOneRoomId(currentUser.email, contact.email);
 
-  // 1. Consistent Local Storage Key for Permanent Message Save
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem(`chathub_msgs_${roomId}`);
     return saved ? JSON.parse(saved) : [];
@@ -63,18 +61,24 @@ const ChatRoom = () => {
   const [isRecipientOnline, setIsRecipientOnline] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
-  // Calling States
+  // --- CALLING STATES ---
   const [activeCall, setActiveCall] = useState(null);
   const [callStatus, setCallStatus] = useState('calling');
   const [callDuration, setCallDuration] = useState(0);
 
-  // Voice Note Recording
+  // --- NAYE VIDEO/AUDIO CALL STATES & REFS ---
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const [localStream, setLocalStream] = useState(null);
+  const peerConnectionRef = useRef(null);
+
+  // --- VOICE NOTE REFS ---
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Voice Playback
+  // --- PLAYBACK REFS ---
   const [playingAudioId, setPlayingAudioId] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const currentAudioRef = useRef(null);
@@ -84,7 +88,6 @@ const ChatRoom = () => {
   const docInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // 2. Har naye message par local storage update aur auto-scroll
   useEffect(() => {
     localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(messages));
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -110,7 +113,39 @@ const ChatRoom = () => {
     return () => clearInterval(timer);
   }, [activeCall, callStatus]);
 
-  // 3. Socket Connection & Real-Time Decryption
+  // --- CAMERA & MIC ON/OFF LOGIC ---
+  const startMediaStream = async (callType) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: callType === 'video',
+        audio: true
+      });
+      setLocalStream(stream);
+      // Timeout takay video tag pehle render ho jaye DOM mein
+      setTimeout(() => {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+      return stream;
+    } catch (err) {
+      alert("Camera/Mic ki permission nahi mili! Kripya HTTPS link use karein (Vercel ya Cloudflare).");
+      console.error(err);
+      return null;
+    }
+  };
+
+  const stopMediaStream = () => {
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      setLocalStream(null);
+    }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+  };
+
   useEffect(() => {
     if (!socket) return;
 
@@ -133,7 +168,6 @@ const ChatRoom = () => {
         }
 
         setMessages((prev) => {
-          // Duplicate check
           if (prev.some((m) => m.id === data.id)) return prev;
           const updated = [...prev, { ...data, text: decryptedText, sender: 'them', status: 'seen' }];
           localStorage.setItem(`chathub_msgs_${roomId}`, JSON.stringify(updated));
@@ -167,10 +201,12 @@ const ChatRoom = () => {
     });
 
     socket.on('call_rejected', () => {
+      stopMediaStream();
       setActiveCall(null);
     });
 
     socket.on('call_terminated', () => {
+      stopMediaStream();
       setActiveCall(null);
     });
 
@@ -186,7 +222,6 @@ const ChatRoom = () => {
     };
   }, [socket, roomId, currentUser.email]);
 
-  // Send Encrypted Message
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!inputMessage.trim()) return;
@@ -226,7 +261,6 @@ const ChatRoom = () => {
     setShowAttachMenu(false);
   };
 
-  // Voice Note
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -268,7 +302,7 @@ const ChatRoom = () => {
       mediaRecorderRef.current.start();
       setIsRecording(true);
     } catch (err) {
-      alert('Microphone permission required.');
+      alert('Microphone permission required for voice notes.');
     }
   };
 
@@ -331,9 +365,14 @@ const ChatRoom = () => {
     reader.readAsDataURL(file);
   };
 
-  const handleStartCall = (type) => {
+  // --- CALL START & END TRIGGERS ---
+  const handleStartCall = async (type) => {
     setActiveCall(type);
     setCallStatus('calling');
+    
+    // Yahan camera aur mic on ho jayega
+    await startMediaStream(type);
+
     if (socket) {
       socket.emit('start_call', {
         roomId,
@@ -346,6 +385,7 @@ const ChatRoom = () => {
   };
 
   const handleEndCall = () => {
+    stopMediaStream(); // Call end hote hi camera band
     setActiveCall(null);
     if (socket) socket.emit('end_call', { roomId });
   };
@@ -501,22 +541,55 @@ const ChatRoom = () => {
           )}
         </div>
 
-        {/* Calling Overlay */}
+        {/* --- NAYA CALLING OVERLAY (CAMERA SCREEN KE SATH) --- */}
         {activeCall && (
-          <div style={{ position: 'absolute', inset: 0, backgroundColor: '#090d0f', zIndex: 60, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between', padding: '60px 24px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
-              <div style={{ width: '90px', height: '90px', borderRadius: '50%', backgroundColor: getAvatarColor(contact.name), color: '#fff', fontSize: '30px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {getInitials(contact.name)}
+          <div style={{ position: 'absolute', inset: 0, backgroundColor: '#090d0f', zIndex: 60, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            
+            {/* Remote User Screen (Doosre user ki screen, abhi black hogi kyunke WebRTC agle step mein lagega) */}
+            <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {activeCall === 'video' ? (
+                <video 
+                  ref={remoteVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#111' }} 
+                />
+              ) : (
+                <div style={{ width: '120px', height: '120px', borderRadius: '50%', backgroundColor: getAvatarColor(contact.name), color: '#fff', fontSize: '40px', fontWeight: '800', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {getInitials(contact.name)}
+                </div>
+              )}
+              
+              <div style={{ position: 'absolute', top: '40px', textAlign: 'center', width: '100%', zIndex: 2 }}>
+                <h2 style={{ color: '#fff', margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{contact.name}</h2>
+                <span style={{ color: '#22c55e', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
+                  {callStatus === 'calling' ? 'Calling...' : `Connected (${callDuration}s)`}
+                </span>
               </div>
-              <h2 style={{ color: '#fff', margin: 0 }}>{contact.name}</h2>
-              <span style={{ color: '#22c55e', fontWeight: 'bold' }}>
-                {callStatus === 'calling' ? 'Calling...' : `Connected (${callDuration}s)`}
-              </span>
             </div>
 
-            <button onClick={handleEndCall} style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#ef4444', color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <PhoneOff size={28} />
-            </button>
+            {/* Local Camera (Aapki apni video feed) */}
+            {activeCall === 'video' && (
+              <div style={{ position: 'absolute', bottom: '120px', right: '20px', width: '100px', height: '140px', borderRadius: '12px', overflow: 'hidden', border: '2px solid #22c55e', backgroundColor: '#222', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                <video 
+                  ref={localVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                />
+              </div>
+            )}
+
+            {/* End Call Button */}
+            <div style={{ padding: '30px', display: 'flex', justifyContent: 'center', gap: '24px', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <button 
+                onClick={handleEndCall} 
+                style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#ef4444', color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <PhoneOff size={28} />
+              </button>
+            </div>
           </div>
         )}
 
