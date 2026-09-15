@@ -5,12 +5,23 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import os from 'os';
+import mongoose from 'mongoose'; // 🟢 NEW: Database connection ke liye
 import authRoutes from './routes/auth.js';
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// 🟢 NEW: MongoDB Database Connection
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/chathub', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => {
+  console.log('✅ MongoDB Connected Successfully');
+}).catch((err) => {
+  console.error('❌ MongoDB Connection Error:', err);
+});
 
 // CORS configuration - Allow all origins (Vercel, Localhost, Network IP)
 app.use(cors({
@@ -172,6 +183,19 @@ io.on('connection', (socket) => {
 
   socket.on('end_call', ({ roomId }) => {
     socket.to(roomId).emit('call_terminated');
+  });
+
+  // 🟢 NEW: WEBRTC SIGNALING EVENTS (Video Calling ke liye Zaroori)
+  socket.on('webrtc_offer', (data) => {
+    socket.to(data.roomId).emit('webrtc_offer', data);
+  });
+
+  socket.on('webrtc_answer', (data) => {
+    socket.to(data.roomId).emit('webrtc_answer', data);
+  });
+
+  socket.on('webrtc_ice_candidate', (data) => {
+    socket.to(data.roomId).emit('webrtc_ice_candidate', data);
   });
 
   // 6. Handle Disconnect
